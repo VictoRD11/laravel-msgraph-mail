@@ -5,7 +5,10 @@ namespace InnoGE\LaravelMsGraphMail;
 use Illuminate\Support\Facades\Mail;
 use InnoGE\LaravelMsGraphMail\Exceptions\ConfigurationInvalid;
 use InnoGE\LaravelMsGraphMail\Exceptions\ConfigurationMissing;
+use InnoGE\LaravelMsGraphMail\Contracts\TokenProviderInterface;
 use InnoGE\LaravelMsGraphMail\Services\MicrosoftGraphApiService;
+use InnoGE\LaravelMsGraphMail\TokenProviders\ClientCredentialsTokenProvider;
+use InnoGE\LaravelMsGraphMail\TokenProviders\PasswordTokenProvider;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
@@ -32,13 +35,11 @@ class LaravelMsGraphMailServiceProvider extends PackageServiceProvider
                 throw new ConfigurationInvalid('access_token_ttl', $accessTokenTtl);
             }
 
+            $authMethod = $config['auth_method'] ?? 'client_credentials';
+            $tokenProvider = $this->createTokenProvider($config, $authMethod, $accessTokenTtl);
+
             return new MicrosoftGraphTransport(
-                new MicrosoftGraphApiService(
-                    tenantId: $this->requireConfigString($config, 'tenant_id'),
-                    clientId: $this->requireConfigString($config, 'client_id'),
-                    clientSecret: $this->requireConfigString($config, 'client_secret'),
-                    accessTokenTtl: $accessTokenTtl,
-                ),
+                new MicrosoftGraphApiService($tokenProvider),
             );
         });
     }
@@ -59,5 +60,36 @@ class LaravelMsGraphMailServiceProvider extends PackageServiceProvider
         }
 
         return $value;
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     * @param string $authMethod
+     * @param int $accessTokenTtl
+     * @return TokenProviderInterface
+     */
+    protected function createTokenProvider(array $config, string $authMethod, int $accessTokenTtl): TokenProviderInterface
+    {
+        $tenantId = $this->requireConfigString($config, 'tenant_id');
+        $clientId = $this->requireConfigString($config, 'client_id');
+        $clientSecret = $this->requireConfigString($config, 'client_secret');
+
+        return match ($authMethod) {
+            'client_credentials' => new ClientCredentialsTokenProvider(
+                tenantId: $tenantId,
+                clientId: $clientId,
+                clientSecret: $clientSecret,
+                accessTokenTtl: $accessTokenTtl,
+            ),
+            'password' => new PasswordTokenProvider(
+                tenantId: $tenantId,
+                clientId: $clientId,
+                clientSecret: $clientSecret,
+                username: $this->requireConfigString($config, 'username'),
+                password: $this->requireConfigString($config, 'password'),
+                accessTokenTtl: $accessTokenTtl,
+            ),
+            default => throw new ConfigurationInvalid('auth_method', $authMethod),
+        };
     }
 }

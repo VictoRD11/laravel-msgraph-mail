@@ -39,9 +39,12 @@ the [Microsoft Graph documentation](https://docs.microsoft.com/en-us/graph/auth-
 
 First you need to add a new entry to the mail drivers array in your `config/mail.php` configuration file:
 
+### Client Credentials Authentication (Default)
+
 ```php
 'microsoft-graph' => [
     'transport' => 'microsoft-graph',
+    'auth_method' => 'client_credentials', // Default, can be omitted
     'client_id' => env('MICROSOFT_GRAPH_CLIENT_ID'),
     'client_secret' => env('MICROSOFT_GRAPH_CLIENT_SECRET'),
     'tenant_id' => env('MICROSOFT_GRAPH_TENANT_ID'),
@@ -53,8 +56,29 @@ First you need to add a new entry to the mail drivers array in your `config/mail
 ],
 ```
 
+### Resource Owner Password Credentials Authentication
+
+```php
+'microsoft-graph' => [
+    'transport' => 'microsoft-graph',
+    'auth_method' => 'password',
+    'client_id' => env('MICROSOFT_GRAPH_CLIENT_ID'),
+    'client_secret' => env('MICROSOFT_GRAPH_CLIENT_SECRET'),
+    'tenant_id' => env('MICROSOFT_GRAPH_TENANT_ID'),
+    'username' => env('MICROSOFT_GRAPH_USERNAME'),
+    'password' => env('MICROSOFT_GRAPH_PASSWORD'),
+    'from' => [
+        'address' => env('MAIL_FROM_ADDRESS'),
+        'name' => env('MAIL_FROM_NAME'),
+    ],
+    'save_to_sent_items' =>  env('MAIL_SAVE_TO_SENT_ITEMS', false),
+],
+```
+
 For the `client_id`, `client_secret` and `tenant_id` you need to use the values from the Azure App you created in the
 previous step.
+
+**Note**: The `client_credentials` method is recommended for production use as it's more secure. The `password` method should only be used when necessary and in secure environments.
 
 The `save_to_sent_items` option in Microsoft Graph refers to a parameter that determines whether a sent email should be saved to the sender's "Sent Items" folder within their mailbox. When this option is set to true, the email will be automatically saved to the "Sent Items" folder, providing a record of the communication. Conversely, when it's set to false, the email will not be saved to the "Sent Items" folder.
 
