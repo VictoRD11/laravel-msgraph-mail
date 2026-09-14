@@ -85,6 +85,39 @@ The `save_to_sent_items` option in Microsoft Graph refers to a parameter that de
 
 By default, the save_to_sent_items option is set to false, which means that emails sent through Microsoft Graph won't be saved in the sender's "Sent Items" folder unless explicitly specified otherwise. This behavior can be useful in scenarios where you might want more control over which emails are saved as sent items, perhaps to reduce clutter or ensure confidentiality.
 
+### Calendar invitations (meeting requests)
+
+Microsoft Graph's JSON `sendMail` endpoint only accepts a bare media type for file attachments, so the
+`method=REQUEST` parameter of a `text/calendar` part is dropped and Outlook shows the invitation as a plain
+`.ics` file that can only be imported. To keep meeting requests working the driver can submit the message as
+raw MIME instead. This is controlled by the `mime_mode` option:
+
+```php
+'microsoft-graph' => [
+    // ...
+    'mime_mode' => env('MAIL_MICROSOFT_GRAPH_MIME_MODE', 'auto'),
+],
+```
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | Messages that contain a `text/calendar` attachment are sent as MIME, everything else as JSON. |
+| `always` | Every message is sent as MIME. |
+| `never` | Every message is sent as JSON (previous behaviour). |
+
+Attach the calendar with the full content type so that Outlook recognises it as a meeting request:
+
+```php
+Attachment::fromData(fn () => $calendar->get(), 'invite.ics')
+    ->withMime('text/calendar; charset=UTF-8; method=REQUEST');
+```
+
+Notes on MIME submissions:
+
+- Graph limits MIME messages to 4 MB.
+- `save_to_sent_items` is ignored, Exchange always stores the sent copy.
+- Bcc recipients are passed via the `Bcc` header, which Exchange strips before delivery.
+
 Now you can switch your default mail driver to the new `microsoft-graph` driver by setting the env variable:
 
 ```dotenv

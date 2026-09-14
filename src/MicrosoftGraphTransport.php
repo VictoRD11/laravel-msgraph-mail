@@ -4,7 +4,6 @@ namespace VictoRD11\LaravelMsGraphMail;
 
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Collection;
-use VictoRD11\LaravelMsGraphMail\Services\MicrosoftGraphApiService;
 use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\Envelope;
@@ -14,13 +13,27 @@ use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Header\HeaderInterface;
 use Symfony\Component\Mime\MessageConverter;
+use VictoRD11\LaravelMsGraphMail\Services\MicrosoftGraphApiService;
 
 class MicrosoftGraphTransport extends AbstractTransport
 {
+    public const MIME_MODE_AUTO = 'auto';
+
+    public const MIME_MODE_ALWAYS = 'always';
+
+    public const MIME_MODE_NEVER = 'never';
+
+    public const MIME_MODES = [
+        self::MIME_MODE_AUTO,
+        self::MIME_MODE_ALWAYS,
+        self::MIME_MODE_NEVER,
+    ];
+
     public function __construct(
         protected MicrosoftGraphApiService $microsoftGraphApiService,
         ?EventDispatcherInterface $dispatcher = null,
-        ?LoggerInterface $logger = null
+        ?LoggerInterface $logger = null,
+        protected string $mimeMode = self::MIME_MODE_AUTO,
     ) {
         parent::__construct($dispatcher, $logger);
     }
@@ -37,6 +50,15 @@ class MicrosoftGraphTransport extends AbstractTransport
     {
         $email = MessageConverter::toEmail($message->getOriginalMessage());
         $envelope = $message->getEnvelope();
+
+        if ($this->shouldSendAsMime($email)) {
+            $this->microsoftGraphApiService->sendMimeMail(
+                $envelope->getSender()->getAddress(),
+                $this->toMimeString($email),
+            );
+
+            return;
+        }
 
         $html = $email->getHtmlBody();
 
@@ -64,6 +86,54 @@ class MicrosoftGraphTransport extends AbstractTransport
         }
 
         $this->microsoftGraphApiService->sendMail($envelope->getSender()->getAddress(), $payload);
+    }
+
+    /**
+     * Decide whether the message has to be submitted as raw MIME instead of the JSON payload.
+     *
+     * The JSON "fileAttachment" resource only carries a bare media type, so Content-Type
+     * parameters such as "method=REQUEST" on text/calendar parts are lost and Outlook shows
+     * a plain .ics file instead of a meeting request. Raw MIME keeps them intact.
+     */
+    protected function shouldSendAsMime(Email $email): bool
+    {
+        return match ($this->mimeMode) {
+            self::MIME_MODE_ALWAYS => true,
+            self::MIME_MODE_NEVER => false,
+            default => $this->hasCalendarAttachment($email),
+        };
+    }
+
+    protected function hasCalendarAttachment(Email $email): bool
+    {
+        foreach ($email->getAttachments() as $attachment) {
+            // The subtype may still carry Content-Type parameters, e.g. "calendar; method=REQUEST".
+            $subtype = strtolower(trim((string) strtok($attachment->getMediaSubtype(), ';')));
+
+            if ($attachment->getMediaType() === 'text' && $subtype === 'calendar') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Serialize the message to MIME for Graph.
+     *
+     * Symfony strips the Bcc header on serialization because SMTP carries Bcc in the envelope.
+     * Graph has no envelope for MIME submissions, so the header is restored here to keep
+     * Bcc recipients; Exchange removes it again before delivery.
+     */
+    protected function toMimeString(Email $email): string
+    {
+        $headers = $email->getPreparedHeaders();
+
+        if (filled($bcc = $email->getBcc())) {
+            $headers->addMailboxListHeader('Bcc', $bcc);
+        }
+
+        return $headers->toString().$email->getBody()->toString();
     }
 
     /**

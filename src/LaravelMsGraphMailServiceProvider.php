@@ -35,11 +35,17 @@ class LaravelMsGraphMailServiceProvider extends PackageServiceProvider
                 throw new ConfigurationInvalid('access_token_ttl', $accessTokenTtl);
             }
 
+            $mimeMode = $config['mime_mode'] ?? MicrosoftGraphTransport::MIME_MODE_AUTO;
+            if (! is_string($mimeMode) || ! in_array($mimeMode, MicrosoftGraphTransport::MIME_MODES, true)) {
+                throw new ConfigurationInvalid('mime_mode', $mimeMode);
+            }
+
             $authMethod = $config['auth_method'] ?? 'client_credentials';
             $tokenProvider = $this->createTokenProvider($config, $authMethod, $accessTokenTtl);
 
             return new MicrosoftGraphTransport(
                 new MicrosoftGraphApiService($tokenProvider),
+                mimeMode: $mimeMode,
             );
         });
     }

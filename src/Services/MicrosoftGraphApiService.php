@@ -13,10 +13,25 @@ class MicrosoftGraphApiService
         protected readonly TokenProviderInterface $tokenProvider
     ) {}
 
+    /**
+     * @param  array<string, mixed>  $payload
+     */
     public function sendMail(string $from, array $payload): Response
     {
         return $this->getBaseRequest()
             ->post("/users/{$from}/sendMail", $payload)
+            ->throw();
+    }
+
+    /**
+     * Send a raw MIME message.
+     * see https://learn.microsoft.com/en-us/graph/outlook-send-mime-message
+     */
+    public function sendMimeMail(string $from, string $mimeMessage): Response
+    {
+        return $this->getBaseRequest()
+            ->withBody(base64_encode($mimeMessage), 'text/plain')
+            ->post("/users/{$from}/sendMail")
             ->throw();
     }
 

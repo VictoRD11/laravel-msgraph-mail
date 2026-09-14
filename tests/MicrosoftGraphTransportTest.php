@@ -10,6 +10,7 @@ use VictoRD11\LaravelMsGraphMail\Exceptions\ConfigurationInvalid;
 use VictoRD11\LaravelMsGraphMail\Exceptions\ConfigurationMissing;
 use VictoRD11\LaravelMsGraphMail\Exceptions\InvalidResponse;
 use VictoRD11\LaravelMsGraphMail\Tests\Stubs\TestMail;
+use VictoRD11\LaravelMsGraphMail\Tests\Stubs\TestMailWithCalendar;
 use VictoRD11\LaravelMsGraphMail\Tests\Stubs\TestMailWithInlineImage;
 
 it('sends html mails with microsoft graph', function () {
@@ -718,3 +719,137 @@ it('throws exceptions when password auth config is invalid', function (array $co
         new ConfigurationInvalid('auth_method', 'invalid_method'),
     ],
 ]);
+
+it('sends mails with calendar attachments as mime with microsoft graph', function () {
+    Config::set('mail.mailers.microsoft-graph', [
+        'transport' => 'microsoft-graph',
+        'client_id' => 'foo_client_id',
+        'client_secret' => 'foo_client_secret',
+        'tenant_id' => 'foo_tenant_id',
+        'from' => [
+            'address' => 'taylor@laravel.com',
+            'name' => 'Taylor Otwell',
+        ],
+    ]);
+    Config::set('mail.default', 'microsoft-graph');
+
+    Cache::set('microsoft-graph-api-client-credentials-access-token', 'foo_access_token', 3600);
+
+    Http::fake();
+
+    Mail::to('caleb@livewire.com')
+        ->bcc('tim@innoge.de')
+        ->cc('nuno@laravel.com')
+        ->send(new TestMailWithCalendar);
+
+    Http::assertSent(function (Request $value) {
+        expect($value)
+            ->url()->toBe('https://graph.microsoft.com/v1.0/users/taylor@laravel.com/sendMail')
+            ->hasHeader('Authorization', 'Bearer foo_access_token')->toBeTrue()
+            ->hasHeader('Content-Type', 'text/plain')->toBeTrue();
+
+        $mime = base64_decode($value->body(), true);
+
+        expect($mime)
+            ->toBeString()
+            ->toContain('Subject: Dev Test')
+            ->toContain('From: Taylor Otwell <taylor@laravel.com>')
+            ->toContain('To: caleb@livewire.com')
+            ->toContain('Cc: nuno@laravel.com')
+            ->toContain('Bcc: tim@innoge.de')
+            ->toContain('X-FE-Attachment-Name: invite.ics')
+            ->toContain('Content-Type: text/calendar; charset=UTF-8; method=REQUEST; name=invite.ics')
+            ->toContain('Content-Disposition: attachment; name=invite.ics; filename=invite.ics')
+            ->toContain(rtrim(chunk_split(base64_encode(TestMailWithCalendar::ICS), 76, "\r\n")))
+            ->toContain('<b>Test</b>');
+
+        return true;
+    });
+});
+
+it('sends every mail as mime when mime_mode is always', function () {
+    Config::set('mail.mailers.microsoft-graph', [
+        'transport' => 'microsoft-graph',
+        'client_id' => 'foo_client_id',
+        'client_secret' => 'foo_client_secret',
+        'tenant_id' => 'foo_tenant_id',
+        'mime_mode' => 'always',
+        'from' => [
+            'address' => 'taylor@laravel.com',
+            'name' => 'Taylor Otwell',
+        ],
+    ]);
+    Config::set('mail.default', 'microsoft-graph');
+
+    Cache::set('microsoft-graph-api-client-credentials-access-token', 'foo_access_token', 3600);
+
+    Http::fake();
+
+    Mail::to('caleb@livewire.com')
+        ->send(new TestMail(false));
+
+    Http::assertSent(function (Request $value) {
+        expect($value)
+            ->url()->toBe('https://graph.microsoft.com/v1.0/users/taylor@laravel.com/sendMail')
+            ->hasHeader('Content-Type', 'text/plain')->toBeTrue();
+
+        expect(base64_decode($value->body(), true))
+            ->toBeString()
+            ->toContain('Subject: Dev Test')
+            ->toContain('To: caleb@livewire.com')
+            ->toContain('Content-Disposition: attachment;')
+            ->toContain('filename=test-file-1.txt')
+            ->toContain('filename=test-file-2.txt');
+
+        return true;
+    });
+});
+
+it('sends calendar attachments as json when mime_mode is never', function () {
+    Config::set('mail.mailers.microsoft-graph', [
+        'transport' => 'microsoft-graph',
+        'client_id' => 'foo_client_id',
+        'client_secret' => 'foo_client_secret',
+        'tenant_id' => 'foo_tenant_id',
+        'mime_mode' => 'never',
+        'from' => [
+            'address' => 'taylor@laravel.com',
+            'name' => 'Taylor Otwell',
+        ],
+    ]);
+    Config::set('mail.default', 'microsoft-graph');
+
+    Cache::set('microsoft-graph-api-client-credentials-access-token', 'foo_access_token', 3600);
+
+    Http::fake();
+
+    Mail::to('caleb@livewire.com')
+        ->send(new TestMailWithCalendar);
+
+    Http::assertSent(function (Request $value) {
+        expect($value)
+            ->url()->toBe('https://graph.microsoft.com/v1.0/users/taylor@laravel.com/sendMail')
+            ->isJson()->toBeTrue()
+            ->body()->json()->toHaveKey('message.attachments.0.name', 'invite.ics');
+
+        return true;
+    });
+});
+
+it('throws exceptions when mime_mode is invalid', function () {
+    Config::set('mail.mailers.microsoft-graph', [
+        'transport' => 'microsoft-graph',
+        'client_id' => 'foo_client_id',
+        'client_secret' => 'foo_client_secret',
+        'tenant_id' => 'foo_tenant_id',
+        'mime_mode' => 'sometimes',
+        'from' => [
+            'address' => 'taylor@laravel.com',
+            'name' => 'Taylor Otwell',
+        ],
+    ]);
+    Config::set('mail.default', 'microsoft-graph');
+
+    expect(fn () => Mail::to('caleb@livewire.com')->send(new TestMail(false)))
+        ->toThrow(ConfigurationInvalid::class, (new ConfigurationInvalid('mime_mode', 'sometimes'))->getMessage());
+});
