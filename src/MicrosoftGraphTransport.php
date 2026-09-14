@@ -13,6 +13,7 @@ use Symfony\Component\Mailer\Transport\AbstractTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Header\HeaderInterface;
+use Symfony\Component\Mime\Header\IdentificationHeader;
 use Symfony\Component\Mime\Message;
 use Symfony\Component\Mime\MessageConverter;
 use VictoRD11\LaravelMsGraphMail\Services\MicrosoftGraphApiService;
@@ -169,12 +170,17 @@ class MicrosoftGraphTransport extends AbstractTransport
             $headers = $attachment->getPreparedHeaders();
             $fileName = $headers->getHeaderParameter('Content-Disposition', 'filename');
 
+            // Inline parts embedded via Message::embed() reference the generated Content-ID
+            // in the HTML body, so it has to be used here for the "cid:" lookup to succeed.
+            $contentIdHeader = $headers->get('Content-ID');
+            $contentId = $contentIdHeader instanceof IdentificationHeader ? $contentIdHeader->getId() : null;
+
             $attachments[] = [
                 '@odata.type' => '#microsoft.graph.fileAttachment',
                 'name' => $fileName,
                 'contentType' => $attachment->getMediaType(),
                 'contentBytes' => base64_encode($attachment->getBody()),
-                'contentId' => $fileName,
+                'contentId' => $contentId ?? $fileName,
                 'isInline' => $headers->getHeaderBody('Content-Disposition') === 'inline',
             ];
         }
