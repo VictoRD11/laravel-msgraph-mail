@@ -3,14 +3,14 @@
 namespace VictoRD11\LaravelMsGraphMail;
 
 use Illuminate\Support\Facades\Mail;
+use Spatie\LaravelPackageTools\Package;
+use Spatie\LaravelPackageTools\PackageServiceProvider;
 use VictoRD11\LaravelMsGraphMail\Contracts\TokenProviderInterface;
 use VictoRD11\LaravelMsGraphMail\Exceptions\ConfigurationInvalid;
 use VictoRD11\LaravelMsGraphMail\Exceptions\ConfigurationMissing;
-use VictoRD11\LaravelMsGraphMail\Services\MicrosoftGraphApiService;
-use Spatie\LaravelPackageTools\Package;
-use Spatie\LaravelPackageTools\PackageServiceProvider;
 use VictoRD11\LaravelMsGraphMail\Providers\ClientCredentialsTokenProvider;
 use VictoRD11\LaravelMsGraphMail\Providers\PasswordTokenProvider;
+use VictoRD11\LaravelMsGraphMail\Services\MicrosoftGraphApiService;
 
 class LaravelMsGraphMailServiceProvider extends PackageServiceProvider
 {
@@ -51,10 +51,7 @@ class LaravelMsGraphMailServiceProvider extends PackageServiceProvider
     }
 
     /**
-     * @param array<string, mixed> $config
-     * @param string $authMethod
-     * @param int $accessTokenTtl
-     * @return TokenProviderInterface
+     * @param  array<string, mixed>  $config
      */
     protected function createTokenProvider(array $config, string $authMethod, int $accessTokenTtl): TokenProviderInterface
     {

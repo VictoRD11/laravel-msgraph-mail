@@ -4,8 +4,8 @@ namespace VictoRD11\LaravelMsGraphMail\Tests;
 
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Facades\View;
-use VictoRD11\LaravelMsGraphMail\LaravelMsGraphMailServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
+use VictoRD11\LaravelMsGraphMail\LaravelMsGraphMailServiceProvider;
 
 class TestCase extends Orchestra
 {
