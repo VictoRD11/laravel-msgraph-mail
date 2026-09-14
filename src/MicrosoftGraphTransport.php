@@ -4,6 +4,7 @@ namespace VictoRD11\LaravelMsGraphMail;
 
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Collection;
+use LogicException;
 use Psr\EventDispatcher\EventDispatcherInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Mailer\Envelope;
@@ -12,6 +13,7 @@ use Symfony\Component\Mailer\Transport\AbstractTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Header\HeaderInterface;
+use Symfony\Component\Mime\Message;
 use Symfony\Component\Mime\MessageConverter;
 use VictoRD11\LaravelMsGraphMail\Services\MicrosoftGraphApiService;
 
@@ -48,7 +50,12 @@ class MicrosoftGraphTransport extends AbstractTransport
      */
     protected function doSend(SentMessage $message): void
     {
-        $email = MessageConverter::toEmail($message->getOriginalMessage());
+        $original = $message->getOriginalMessage();
+        if (! $original instanceof Message) {
+            throw new LogicException(sprintf('%s only supports %s instances, %s given.', self::class, Message::class, get_debug_type($original)));
+        }
+
+        $email = MessageConverter::toEmail($original);
         $envelope = $message->getEnvelope();
 
         if ($this->shouldSendAsMime($email)) {
@@ -60,7 +67,7 @@ class MicrosoftGraphTransport extends AbstractTransport
             return;
         }
 
-        $html = $email->getHtmlBody();
+        $html = $this->bodyToString($email->getHtmlBody());
 
         [$attachments, $html] = $this->prepareAttachments($email, $html);
 
@@ -69,7 +76,7 @@ class MicrosoftGraphTransport extends AbstractTransport
                 'subject' => $email->getSubject(),
                 'body' => [
                     'contentType' => $html === null ? 'Text' : 'HTML',
-                    'content' => $html ?: $email->getTextBody(),
+                    'content' => $html ?: $this->bodyToString($email->getTextBody()),
                 ],
                 'toRecipients' => $this->transformEmailAddresses($this->getRecipients($email, $envelope)),
                 'ccRecipients' => $this->transformEmailAddresses(collect($email->getCc())),
@@ -137,6 +144,22 @@ class MicrosoftGraphTransport extends AbstractTransport
     }
 
     /**
+     * Symfony exposes message bodies either as a string or as a stream resource.
+     *
+     * @param  resource|string|null  $body
+     */
+    protected function bodyToString(mixed $body): ?string
+    {
+        if (is_string($body) || $body === null) {
+            return $body;
+        }
+
+        $contents = stream_get_contents($body);
+
+        return $contents === false ? null : $contents;
+    }
+
+    /**
      * @return array<int, array<int<0, max>, array<string, bool|string|null>>|string|null>
      */
     protected function prepareAttachments(Email $email, ?string $html): array
@@ -161,15 +184,18 @@ class MicrosoftGraphTransport extends AbstractTransport
 
     /**
      * @param  Collection<array-key, Address>  $recipients
-     * @return array<array-key, array<string, array<string, string>>>
+     * @return array<array-key, array{emailAddress: array{address: string}}>
      */
     protected function transformEmailAddresses(Collection $recipients): array
     {
         return $recipients
             ->map(fn (Address $recipient) => $this->transformEmailAddress($recipient))
-            ->toArray();
+            ->all();
     }
 
+    /**
+     * @return array{emailAddress: array{address: string}}
+     */
     protected function transformEmailAddress(Address $address): array
     {
         return [
@@ -192,13 +218,19 @@ class MicrosoftGraphTransport extends AbstractTransport
      * Transforms given Symfony Headers
      * to Microsoft Graph internet message headers
      * see https://learn.microsoft.com/en-us/graph/api/resources/internetmessageheader?view=graph-rest-1.0
+     *
+     * @return list<array{name: string, value: string}>|null
      */
     protected function getInternetMessageHeaders(Email $email): ?array
     {
-        return collect($email->getHeaders()->all())
-            ->filter(fn (HeaderInterface $header) => str_starts_with($header->getName(), 'X-'))
-            ->map(fn (HeaderInterface $header) => ['name' => $header->getName(), 'value' => $header->getBodyAsString()])
-            ->values()
-            ->all() ?: null;
+        $headers = [];
+
+        foreach ($email->getHeaders()->all() as $header) {
+            if ($header instanceof HeaderInterface && str_starts_with($header->getName(), 'X-')) {
+                $headers[] = ['name' => $header->getName(), 'value' => $header->getBodyAsString()];
+            }
+        }
+
+        return $headers ?: null;
     }
 }

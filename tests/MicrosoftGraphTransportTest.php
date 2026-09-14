@@ -6,6 +6,10 @@ use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Symfony\Component\Mailer\Envelope;
+use Symfony\Component\Mime\Address;
+use Symfony\Component\Mime\Email;
+use Symfony\Component\Mime\RawMessage;
 use VictoRD11\LaravelMsGraphMail\Exceptions\ConfigurationInvalid;
 use VictoRD11\LaravelMsGraphMail\Exceptions\ConfigurationMissing;
 use VictoRD11\LaravelMsGraphMail\Exceptions\InvalidResponse;
@@ -852,4 +856,129 @@ it('throws exceptions when mime_mode is invalid', function () {
 
     expect(fn () => Mail::to('caleb@livewire.com')->send(new TestMail(false)))
         ->toThrow(ConfigurationInvalid::class, (new ConfigurationInvalid('mime_mode', 'sometimes'))->getMessage());
+});
+
+it('sends html and text bodies given as stream resources', function () {
+    Config::set('mail.mailers.microsoft-graph', [
+        'transport' => 'microsoft-graph',
+        'client_id' => 'foo_client_id',
+        'client_secret' => 'foo_client_secret',
+        'tenant_id' => 'foo_tenant_id',
+        'from' => [
+            'address' => 'taylor@laravel.com',
+            'name' => 'Taylor Otwell',
+        ],
+    ]);
+
+    Cache::set('microsoft-graph-api-client-credentials-access-token', 'foo_access_token', 3600);
+
+    Http::fake();
+
+    $html = fopen('php://memory', 'r+');
+    fwrite($html, '<b>Stream</b>');
+    rewind($html);
+
+    $email = (new Email)
+        ->from('taylor@laravel.com')
+        ->to('caleb@livewire.com')
+        ->subject('Stream Test')
+        ->html($html);
+
+    Mail::mailer('microsoft-graph')->getSymfonyTransport()->send($email);
+
+    Http::assertSent(function (Request $value) {
+        expect($value->body())->json()->toMatchArray([
+            'message' => [
+                'subject' => 'Stream Test',
+                'body' => [
+                    'contentType' => 'HTML',
+                    'content' => '<b>Stream</b>',
+                ],
+                'toRecipients' => [['emailAddress' => ['address' => 'caleb@livewire.com']]],
+                'ccRecipients' => [],
+                'bccRecipients' => [],
+                'replyTo' => [],
+                'sender' => ['emailAddress' => ['address' => 'taylor@laravel.com']],
+                'attachments' => [],
+            ],
+            'saveToSentItems' => false,
+        ]);
+
+        return true;
+    });
+
+    Http::fake();
+
+    $text = fopen('php://memory', 'r+');
+    fwrite($text, 'Plain stream');
+    rewind($text);
+
+    $email = (new Email)
+        ->from('taylor@laravel.com')
+        ->to('caleb@livewire.com')
+        ->subject('Stream Text Test')
+        ->text($text);
+
+    Mail::mailer('microsoft-graph')->getSymfonyTransport()->send($email);
+
+    Http::assertSent(function (Request $value) {
+        expect($value->body())->json()->toMatchArray([
+            'message' => [
+                'subject' => 'Stream Text Test',
+                'body' => [
+                    'contentType' => 'Text',
+                    'content' => 'Plain stream',
+                ],
+                'toRecipients' => [['emailAddress' => ['address' => 'caleb@livewire.com']]],
+                'ccRecipients' => [],
+                'bccRecipients' => [],
+                'replyTo' => [],
+                'sender' => ['emailAddress' => ['address' => 'taylor@laravel.com']],
+                'attachments' => [],
+            ],
+            'saveToSentItems' => false,
+        ]);
+
+        return true;
+    });
+});
+
+it('rejects raw messages that cannot be converted to an email', function () {
+    Config::set('mail.mailers.microsoft-graph', [
+        'transport' => 'microsoft-graph',
+        'client_id' => 'foo_client_id',
+        'client_secret' => 'foo_client_secret',
+        'tenant_id' => 'foo_tenant_id',
+        'from' => [
+            'address' => 'taylor@laravel.com',
+            'name' => 'Taylor Otwell',
+        ],
+    ]);
+
+    Http::fake();
+
+    $envelope = new Envelope(new Address('taylor@laravel.com'), [new Address('caleb@livewire.com')]);
+
+    expect(fn () => Mail::mailer('microsoft-graph')->getSymfonyTransport()->send(new RawMessage('raw'), $envelope))
+        ->toThrow(LogicException::class, RawMessage::class);
+
+    Http::assertNothingSent();
+});
+
+it('throws an exception when auth_method is not a string', function () {
+    Config::set('mail.mailers.microsoft-graph', [
+        'transport' => 'microsoft-graph',
+        'auth_method' => ['password'],
+        'client_id' => 'foo_client_id',
+        'client_secret' => 'foo_client_secret',
+        'tenant_id' => 'foo_tenant_id',
+        'from' => [
+            'address' => 'taylor@laravel.com',
+            'name' => 'Taylor Otwell',
+        ],
+    ]);
+    Config::set('mail.default', 'microsoft-graph');
+
+    expect(fn () => Mail::to('caleb@livewire.com')->send(new TestMail(false)))
+        ->toThrow(ConfigurationInvalid::class, 'auth_method');
 });
