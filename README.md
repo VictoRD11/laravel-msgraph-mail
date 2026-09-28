@@ -117,6 +117,10 @@ Notes on MIME submissions:
 - Graph limits MIME messages to 4 MB.
 - `save_to_sent_items` is ignored, Exchange always stores the sent copy.
 - Bcc recipients are passed via the `Bcc` header, which Exchange strips before delivery.
+- Exchange delivers a meeting request only to the `ATTENDEE` entries of the calendar and ignores other
+  recipients. To and Cc recipients are therefore added to the calendar as required and optional attendees.
+  Every Bcc recipient receives a separate invitation (one extra Graph request each) that lists only
+  themselves, so the other recipients never see them.
 
 Now you can switch your default mail driver to the new `microsoft-graph` driver by setting the env variable:
 

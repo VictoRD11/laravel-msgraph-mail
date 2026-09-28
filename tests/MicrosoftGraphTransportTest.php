@@ -746,30 +746,120 @@ it('sends mails with calendar attachments as mime with microsoft graph', functio
         ->cc('nuno@laravel.com')
         ->send(new TestMailWithCalendar);
 
-    Http::assertSent(function (Request $value) {
-        expect($value)
+    Http::assertSentCount(2);
+
+    $requests = Http::recorded()->map(fn (array $pair) => $pair[0]);
+
+    foreach ($requests as $request) {
+        expect($request)
             ->url()->toBe('https://graph.microsoft.com/v1.0/users/taylor@laravel.com/sendMail')
             ->hasHeader('Authorization', 'Bearer foo_access_token')->toBeTrue()
             ->hasHeader('Content-Type', 'text/plain')->toBeTrue();
+    }
 
-        $mime = base64_decode($value->body(), true);
+    $invitation = base64_decode($requests[0]->body(), true);
 
-        expect($mime)
-            ->toBeString()
-            ->toContain('Subject: Dev Test')
-            ->toContain('From: Taylor Otwell <taylor@laravel.com>')
-            ->toContain('To: caleb@livewire.com')
-            ->toContain('Cc: nuno@laravel.com')
-            ->toContain('Bcc: tim@innoge.de')
-            ->toContain('X-FE-Attachment-Name: invite.ics')
-            ->toContain('Content-Type: text/calendar; charset=UTF-8; method=REQUEST; name=invite.ics')
-            ->toContain('Content-Disposition: attachment; name=invite.ics; filename=invite.ics')
-            ->toContain(rtrim(chunk_split(base64_encode(TestMailWithCalendar::ICS), 76, "\r\n")))
-            ->toContain('<b>Test</b>');
+    expect($invitation)
+        ->toBeString()
+        ->toContain('Subject: Dev Test')
+        ->toContain('From: Taylor Otwell <taylor@laravel.com>')
+        ->toContain('To: caleb@livewire.com')
+        ->toContain('Cc: nuno@laravel.com')
+        ->not->toContain('Bcc:')
+        ->not->toContain('tim@innoge.de')
+        ->toContain('X-FE-Attachment-Name: invite.ics')
+        ->toContain('Content-Type: text/calendar; charset=UTF-8; method=REQUEST; name=invite.ics')
+        ->toContain('Content-Disposition: attachment; name=invite.ics; filename=invite.ics')
+        ->toContain('<b>Test</b>');
 
-        return true;
-    });
+    expect(unfoldCalendar(calendarFromMime($invitation)))->toBe(str_replace(
+        "END:VEVENT\r\n",
+        "ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:caleb@livewire.com\r\n"
+        ."ATTENDEE;ROLE=OPT-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:nuno@laravel.com\r\n"
+        ."END:VEVENT\r\n",
+        TestMailWithCalendar::ICS,
+    ));
+
+    $bccCopy = base64_decode($requests[1]->body(), true);
+
+    expect($bccCopy)
+        ->toBeString()
+        ->toContain('Subject: Dev Test')
+        ->toContain('To: tim@innoge.de')
+        ->not->toContain('Cc:')
+        ->not->toContain('Bcc:')
+        ->not->toContain('caleb@livewire.com')
+        ->not->toContain('nuno@laravel.com')
+        ->toContain('<b>Test</b>');
+
+    expect(unfoldCalendar(calendarFromMime($bccCopy)))->toBe(str_replace(
+        "END:VEVENT\r\n",
+        "ATTENDEE;ROLE=OPT-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:tim@innoge.de\r\n"
+        ."END:VEVENT\r\n",
+        TestMailWithCalendar::ICS,
+    ));
+
+    preg_match_all('/^Message-ID: (.+)$/m', $invitation.$bccCopy, $ids);
+    expect(array_unique($ids[1]))->toHaveCount(2);
 });
+
+it('keeps existing calendar attendees and folds added ones', function () {
+    Config::set('mail.mailers.microsoft-graph', [
+        'transport' => 'microsoft-graph',
+        'client_id' => 'foo_client_id',
+        'client_secret' => 'foo_client_secret',
+        'tenant_id' => 'foo_tenant_id',
+        'from' => [
+            'address' => 'taylor@laravel.com',
+            'name' => 'Taylor Otwell',
+        ],
+    ]);
+
+    Cache::set('microsoft-graph-api-client-credentials-access-token', 'foo_access_token', 3600);
+
+    Http::fake();
+
+    $ics = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:foo\r\n"
+        ."ATTENDEE;ROLE=REQ-PARTICIPANT;CN=Caleb:mailto:CALEB@\r\n livewire.com\r\n"
+        ."END:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    $email = (new Email)
+        ->from('taylor@laravel.com')
+        ->to('caleb@livewire.com')
+        ->cc(new Address('nuno@laravel.com', 'Нуно Мадуро "Laravel" Very Long Display Name'))
+        ->subject('Calendar Test')
+        ->html('<b>Test</b>')
+        ->attach($ics, 'invite.ics', 'text/calendar; method=REQUEST');
+
+    Mail::mailer('microsoft-graph')->getSymfonyTransport()->send($email);
+
+    Http::assertSentCount(1);
+
+    $calendar = calendarFromMime(base64_decode(Http::recorded()[0][0]->body(), true));
+
+    expect(substr_count($calendar, 'ATTENDEE'))->toBe(2);
+
+    foreach (explode("\r\n", $calendar) as $line) {
+        expect(strlen($line))->toBeLessThanOrEqual(75);
+    }
+
+    expect(unfoldCalendar($calendar))->toContain(
+        'ATTENDEE;ROLE=OPT-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN="Нуно Мадуро Laravel Very Long Display Name":mailto:nuno@laravel.com'
+        ."\r\nEND:VEVENT"
+    );
+});
+
+function unfoldCalendar(string $ics): string
+{
+    return (string) preg_replace('/\r\n[ \t]/', '', $ics);
+}
+
+function calendarFromMime(string $mime): string
+{
+    preg_match('/Content-Type: text\/calendar.*?\r\n\r\n(.*?)\r\n--/s', $mime, $match);
+
+    return (string) base64_decode($match[1], true);
+}
 
 it('sends every mail as mime when mime_mode is always', function () {
     Config::set('mail.mailers.microsoft-graph', [
