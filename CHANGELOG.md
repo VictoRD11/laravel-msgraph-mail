@@ -2,6 +2,12 @@
 
 All notable changes to `laravel-msgraph-mail` will be documented in this file.
 
+## Unreleased
+
+- Fixed Cc and Bcc recipients not receiving calendar invitations sent as MIME. Exchange delivers meeting
+  requests only to the calendar attendees, so To and Cc recipients are now added as `ATTENDEE` entries and
+  every Bcc recipient receives a separate invitation that lists only themselves.
+
 ## v1.1.0 - 2026-09-14
 
 **Full Changelog**: https://github.com/VictoRD11/laravel-msgraph-mail/compare/v1.0.0...v1.1.0

@@ -13,9 +13,11 @@ use Symfony\Component\Mailer\Transport\AbstractTransport;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Mime\Header\HeaderInterface;
+use Symfony\Component\Mime\Header\Headers;
 use Symfony\Component\Mime\Header\IdentificationHeader;
 use Symfony\Component\Mime\Message;
 use Symfony\Component\Mime\MessageConverter;
+use Symfony\Component\Mime\Part\DataPart;
 use VictoRD11\LaravelMsGraphMail\Services\MicrosoftGraphApiService;
 
 class MicrosoftGraphTransport extends AbstractTransport
@@ -60,10 +62,14 @@ class MicrosoftGraphTransport extends AbstractTransport
         $envelope = $message->getEnvelope();
 
         if ($this->shouldSendAsMime($email)) {
-            $this->microsoftGraphApiService->sendMimeMail(
-                $envelope->getSender()->getAddress(),
-                $this->toMimeString($email),
-            );
+            $messages = $this->hasCalendarAttachment($email) ? $this->toMeetingRequests($email) : [$email];
+
+            foreach ($messages as $mime) {
+                $this->microsoftGraphApiService->sendMimeMail(
+                    $envelope->getSender()->getAddress(),
+                    $this->toMimeString($mime),
+                );
+            }
 
             return;
         }
@@ -115,15 +121,151 @@ class MicrosoftGraphTransport extends AbstractTransport
     protected function hasCalendarAttachment(Email $email): bool
     {
         foreach ($email->getAttachments() as $attachment) {
-            // The subtype may still carry Content-Type parameters, e.g. "calendar; method=REQUEST".
-            $subtype = strtolower(trim((string) strtok($attachment->getMediaSubtype(), ';')));
-
-            if ($attachment->getMediaType() === 'text' && $subtype === 'calendar') {
+            if ($this->isCalendarPart($attachment)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    protected function isCalendarPart(DataPart $part): bool
+    {
+        // The subtype may still carry Content-Type parameters, e.g. "calendar; method=REQUEST".
+        $subtype = strtolower(trim((string) strtok($part->getMediaSubtype(), ';')));
+
+        return $part->getMediaType() === 'text' && $subtype === 'calendar';
+    }
+
+    /**
+     * Split a message with a calendar invitation into the messages submitted to Graph.
+     *
+     * Exchange turns such a message into a meeting request and delivers it only to the
+     * ATTENDEE entries of the calendar, dropping every other To/Cc/Bcc recipient. To and Cc
+     * recipients are therefore added as attendees, while each Bcc recipient gets a separate
+     * invitation listing only themselves, so that no other recipient learns about them.
+     *
+     * @return list<Email>
+     */
+    protected function toMeetingRequests(Email $email): array
+    {
+        $messages = [];
+
+        if (filled($email->getTo()) || filled($email->getCc())) {
+            $headers = clone $email->getHeaders();
+            $headers->remove('Bcc');
+
+            $attendees = array_merge(
+                array_map(fn (Address $address) => [$address, 'REQ-PARTICIPANT'], $email->getTo()),
+                array_map(fn (Address $address) => [$address, 'OPT-PARTICIPANT'], $email->getCc()),
+            );
+
+            $messages[] = $this->withCalendar($email, $headers, fn (string $ics) => $this->addCalendarAttendees($ics, $attendees));
+        }
+
+        foreach ($email->getBcc() as $bcc) {
+            $headers = clone $email->getHeaders();
+            $headers->remove('Cc');
+            $headers->remove('Bcc');
+            // A fresh Message-ID is generated so that the copies are not treated as duplicates.
+            $headers->remove('Message-ID');
+            $headers->remove('To');
+            $headers->addMailboxListHeader('To', [$bcc]);
+
+            $messages[] = $this->withCalendar($email, $headers, fn (string $ics) => $this->addCalendarAttendees(
+                $this->removeCalendarAttendees($ics),
+                [[$bcc, 'OPT-PARTICIPANT']],
+            ));
+        }
+
+        return $messages;
+    }
+
+    /**
+     * Copy the message with the given headers, passing every calendar part through $transform.
+     *
+     * @param  callable(string): string  $transform
+     */
+    protected function withCalendar(Email $email, Headers $headers, callable $transform): Email
+    {
+        $copy = new Email($headers);
+
+        if ($email->getTextBody() !== null) {
+            $copy->text($email->getTextBody(), $email->getTextCharset() ?? 'utf-8');
+        }
+
+        if ($email->getHtmlBody() !== null) {
+            $copy->html($email->getHtmlBody(), $email->getHtmlCharset() ?? 'utf-8');
+        }
+
+        foreach ($email->getAttachments() as $attachment) {
+            $copy->addPart($this->isCalendarPart($attachment)
+                ? new DataPart($transform($attachment->getBody()), $attachment->getFilename(), $attachment->getContentType())
+                : $attachment);
+        }
+
+        return $copy;
+    }
+
+    /**
+     * Add ATTENDEE properties to every VEVENT for addresses that are not listed yet.
+     *
+     * @param  array<array{0: Address, 1: string}>  $attendees  pairs of address and ROLE
+     */
+    protected function addCalendarAttendees(string $ics, array $attendees): string
+    {
+        $eol = str_contains($ics, "\r\n") ? "\r\n" : "\n";
+
+        preg_match_all('/^ATTENDEE[;:].*?mailto:([^\s;:"]+)/mi', (string) preg_replace('/\r?\n[ \t]/', '', $ics), $matches);
+        $listed = array_map('strtolower', $matches[1]);
+
+        $lines = '';
+        foreach ($attendees as [$address, $role]) {
+            if (in_array(strtolower($address->getAddress()), $listed, true)) {
+                continue;
+            }
+
+            $listed[] = strtolower($address->getAddress());
+
+            $name = str_replace(['"', "\r", "\n"], '', $address->getName());
+            $line = 'ATTENDEE;ROLE='.$role.';PARTSTAT=NEEDS-ACTION;RSVP=TRUE'
+                .($name !== '' ? ';CN="'.$name.'"' : '')
+                .':mailto:'.$address->getAddress();
+
+            $lines .= $this->foldCalendarLine($line, $eol).$eol;
+        }
+
+        if ($lines === '') {
+            return $ics;
+        }
+
+        return (string) preg_replace_callback('/^END:VEVENT/mi', fn (array $match) => $lines.$match[0], $ics);
+    }
+
+    protected function removeCalendarAttendees(string $ics): string
+    {
+        return (string) preg_replace('/^ATTENDEE[;:][^\r\n]*(?:\r?\n[ \t][^\r\n]*)*\r?\n/mi', '', $ics);
+    }
+
+    /**
+     * Fold a content line to 75 octets as required by RFC 5545 without splitting UTF-8 characters.
+     */
+    protected function foldCalendarLine(string $line, string $eol): string
+    {
+        $chunks = [];
+        $limit = 75;
+
+        while (strlen($line) > $limit) {
+            $chunk = mb_strcut($line, 0, $limit, 'UTF-8');
+            $chunks[] = $chunk;
+            $line = substr($line, strlen($chunk));
+            // Continuation lines start with a space, which counts towards the limit.
+            $limit = 74;
+        }
+
+        $chunks[] = $line;
+
+        return implode($eol.' ', $chunks);
     }
 
     /**
